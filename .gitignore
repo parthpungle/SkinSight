@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Node
+node_modules/
+frontend/dist/
+
+# Env / secrets
+.env
+.env.local
+
+# Data and generated artifacts (kept outside OneDrive at C:/skinsight_data by default)
+data/raw/
+data/processed/
+artifacts/models/
+*.pth
+*.zip
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,58 @@
+# SkinSight experiment configuration.
+# data_root lives outside OneDrive; override with the SKINSIGHT_DATA env var.
+data_root: C:/skinsight_data
+
+paths:
+  raw_zips: raw/zips
+  images: raw/images            # unzipped HAM10000 JPEGs
+  masks: raw/masks              # unzipped Tschandl lesion masks
+  metadata: raw/zips/HAM10000_metadata.csv
+  splits: splits
+  artifacts: artifacts
+
+dataset:
+  name: HAM10000
+  # Binary mapping (malignant = positive class, index 1).
+  malignant: [mel, bcc, akiec]
+  benign: [nv, bkl, df, vasc]
+  class_names: [benign, malignant]
+
+split:
+  seed: 42
+  train: 0.70
+  val: 0.15
+  test: 0.15
+  group_by: lesion_id
+
+preprocess:
+  image_size: 224               # full-image resize, no center crop (keeps lesion borders)
+  imagenet_mean: [0.485, 0.456, 0.406]
+  imagenet_std: [0.229, 0.224, 0.225]
+
+train:
+  seeds: [0, 1, 2]
+  batch_size: 32
+  num_workers: 4
+  amp: true
+  max_epochs: 20
+  early_stopping_patience: 5
+  monitor: val_auroc
+  class_weighted_loss: true
+  models:
+    small_cnn:
+      lr: 1.0e-3
+      weight_decay: 1.0e-4
+    efficientnet_b0:
+      head_lr: 1.0e-3
+      backbone_lr: 1.0e-4
+      freeze_epochs: 2
+      weight_decay: 1.0e-4
+    mobilenet_v2:
+      head_lr: 1.0e-3
+      backbone_lr: 1.0e-4
+      freeze_epochs: 2
+      weight_decay: 1.0e-4
+
+evaluate:
+  bootstrap_resamples: 1000
+  threshold_rule: youden_on_val
