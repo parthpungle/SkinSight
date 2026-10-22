@@ -1,13 +1,63 @@
 @import "tailwindcss";
 
-:root {
-  color-scheme: light;
+/* Dark research-dashboard palette (single theme). */
+@theme {
+  --color-bg: #181818;
+  --color-panel: #1e1e1e;
+  --color-surface: #222222;
+  --color-surface-hover: #2a2a2a;
+  --color-line: #2f2f2f;
+  --color-line-strong: #4a4a4a;
+  --color-fg: #ececec;
+  --color-muted: #9a9a9a;
+  --color-faint: #6b6b6b;
+  --color-accent: #6aa9e9;
+  --color-good: #5fbf8a;
+  --color-warn: #d9b45a;
+  --color-bad: #d96a5f;
+  --color-rust: #8a4b44;
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
 }
 
-body {
-  @apply bg-slate-50 text-slate-800 antialiased;
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  @apply bg-bg text-fg font-sans antialiased;
+}
+
+.num {
+  @apply font-mono tabular-nums;
 }
 
 :focus-visible {
-  @apply outline-2 outline-offset-2 outline-teal-600;
+  @apply outline-2 outline-offset-2 outline-accent;
+}
+
+/* Thin, dark scrollbars like the reference. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3a3a3a transparent;
+}
+
+@media print {
+  [data-noprint] {
+    display: none !important;
+  }
+  html,
+  body,
+  #root {
+    background: #fff !important;
+    color: #000 !important;
+  }
+  .print-plain {
+    border-color: #999 !important;
+    background: #fff !important;
+    color: #000 !important;
+  }
 }

@@ -101,3 +101,104 @@ def test_metrics_reads_saved_files_only(client):
 
 def test_figure_path_traversal_rejected(client):
     assert client.get("/figures/..%2F..%2Fsecret.png").status_code == 404
+
+
+# ---- /compare, /samples, /novelty -------------------------------------------------------------
+
+def test_compare_returns_one_result_per_ready_model(client):
+    r = client.post("/compare", files={"file": ("x.jpg", _image_bytes(), "image/jpeg")})
+    assert r.status_code == 200, r.text
+    results = r.json()["results"]
+    assert [x["model_id"] for x in results] == ["small_cnn"]
+    assert results[0]["explanation_available"] is False
+
+
+def test_compare_rejects_corrupt_and_oversized(client, monkeypatch):
+    assert client.post("/compare", files={"file": ("x.jpg", b"junk", "image/jpeg")}).status_code == 415
+    import backend.app.main as main
+    monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 1000)
+    big = _image_bytes(size=(400, 400))
+    assert client.post("/compare", files={"file": ("x.jpg", big, "image/jpeg")}).status_code == 413
+
+
+def test_samples_and_novelty_unavailable_without_artifacts(client):
+    assert client.get("/samples").json()["available"] is False
+    assert client.get("/samples/ISIC_0000001").status_code == 404
+    assert client.get("/novelty").json() == {"available": False}
+
+
+@pytest.fixture()
+def data_client(tmp_path, monkeypatch):
+    import json
+
+    import pandas as pd
+    art = tmp_path / "artifacts"
+    for d in ("models", "metrics", "novelty"):
+        (art / d).mkdir(parents=True)
+    (tmp_path / "splits").mkdir()
+    (tmp_path / "raw" / "images").mkdir(parents=True)
+    model = build_model("small_cnn", pretrained=False)
+    torch.save({"state_dict": model.state_dict(), "model_id": "small_cnn", "class_names": ["benign", "malignant"],
+                "image_size": 224, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225],
+                "color_constancy": False, "seed": 0, "epoch": 1, "val_auroc": 0.5, "val_threshold": 0.5},
+               art / "models" / "small_cnn_s0.pth")
+    ids = [f"ISIC_000000{i}" for i in range(8)]
+    split = ["train"] * 3 + ["test"] * 5
+    labels = [0, 1, 0, 1, 0, 0, 1, 0]
+    for i in ids:
+        (tmp_path / "raw" / "images" / f"{i}.jpg").write_bytes(_image_bytes())
+    pd.DataFrame({"image_id": ids, "lesion_id": [f"L{k}" for k in range(8)], "dx": ["nv"] * 7 + ["mel"],
+                  "label": labels, "split": split,
+                  "image_path": [f"raw/images/{i}.jpg" for i in ids]}).to_csv(tmp_path / "splits" / "manifest_split.csv",
+                                                                             index=False)
+    pd.DataFrame({"image_id": ids, "split": split, "border_haziness": [0.5, 0.7, 0.9, 0.4, 0.6, 0.8, 1.0, 0.75],
+                  "lab_sd": [10, 12, 14, 9, 11, 13, 15, 12.5], "contrast_L": 10.0,
+                  "hair_frac": 0.0}).to_csv(art / "novelty" / "lesion_features.csv", index=False)
+    (art / "metrics" / "summary.json").write_text(json.dumps({"served_checkpoints": {"efficientnet_b0": "efficientnet_b0_s0"}}))
+    test_ids = ids[3:]
+    pd.DataFrame({"image_id": test_ids, "run": "efficientnet_b0_s0", "score_malignant": [0.9, 0.2, 0.1, 0.3, 0.8],
+                  "pred_label": [1, 0, 0, 0, 1], "threshold": 0.5}).to_csv(art / "metrics" / "test_predictions.csv",
+                                                                         index=False)
+    (art / "novelty" / "stratified_test.json").write_text(json.dumps({"split": "test", "scores": {}}))
+    pd.DataFrame({"image_id": test_ids, "true_label": [1, 0, 0, 1, 0], "pred_label": [1, 0, 0, 0, 1],
+                  "cam_in_mask": [0.6, 0.5, 0.4, 0.9, 0.1], "mask_area_frac": [0.3, 0.25, 0.2, 0.3, 0.2]}).to_csv(
+        art / "novelty" / "cam_in_mask_efficientnet_b0_s0_test.csv", index=False)
+    monkeypatch.setenv("SKINSIGHT_DATA", str(tmp_path))
+    from backend.app.main import app
+    with TestClient(app) as c:
+        yield c
+
+
+def test_samples_filter_and_paginate(data_client):
+    body = data_client.get("/samples").json()
+    assert body["available"] and body["total"] == 5 and body["reference_run"] == "efficientnet_b0_s0"
+    assert {x["image_id"] for x in body["items"]} == {f"ISIC_000000{i}" for i in range(3, 8)}
+    assert data_client.get("/samples?label=1").json()["total"] == 2
+    assert data_client.get("/samples?dx=mel").json()["total"] == 1
+    page = data_client.get("/samples?limit=2&offset=4").json()
+    assert page["total"] == 5 and len(page["items"]) == 1
+    # disagreements: ISIC_0000006 (true 1, pred 0) and ISIC_0000007 (true 0, pred 1)
+    assert {x["image_id"] for x in data_client.get("/samples?disagree=true").json()["items"]} == {
+        "ISIC_0000006", "ISIC_0000007"}
+    assert data_client.get("/samples?haziness_tertile=bogus").status_code == 422
+
+
+def test_sample_detail_and_image(data_client):
+    row = data_client.get("/samples/ISIC_0000003").json()
+    assert row["label"] == 1 and row["ref_score"] == 0.9 and row["haziness_tertile"] in ("low", "mid", "high")
+    img = data_client.get("/samples/ISIC_0000003/image")
+    assert img.status_code == 200 and img.headers["content-type"] == "image/jpeg"
+
+
+def test_sample_image_rejects_bad_ids(data_client):
+    for bad in ("ISIC_0000000", "ISIC_123", "..%2F..%2Fsplits%2Fmanifest_split.csv", "ISIC_9999999"):
+        assert data_client.get(f"/samples/{bad}/image").status_code == 404, bad  # train id, malformed, traversal, unknown
+
+
+def test_novelty_enrichment_from_cam_csv(data_client):
+    body = data_client.get("/novelty").json()
+    e = body["enrichment"]["test"]["efficientnet_b0_s0"]
+    assert e["TP"] == {"median": 2.0, "n": 1}            # 0.6 / 0.3
+    assert e["FP"] == {"median": 0.5, "n": 1}            # 0.1 / 0.2
+    assert e["FN"]["n"] == 1 and e["TN"]["n"] == 2
+    assert body["verdicts"] == []

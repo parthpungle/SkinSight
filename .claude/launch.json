@@ -4,14 +4,18 @@
     {
       "name": "api",
       "runtimeExecutable": "C:/skinsight_data/.venv/Scripts/python.exe",
-      "runtimeArgs": ["-m", "uvicorn", "backend.app.main:app", "--port", "8000"],
-      "port": 8000
+      "runtimeArgs": ["-m", "uvicorn", "backend.app.main:app", "--port", "8010"],
+      "env": { "SKINSIGHT_CORS_ORIGINS": "http://localhost:5180,http://127.0.0.1:5180" },
+      "port": 8010,
+      "autoPort": false
     },
     {
       "name": "frontend",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "frontend", "run", "dev"],
-      "port": 5173
+      "runtimeArgs": ["--prefix", "frontend", "run", "dev", "--", "--port", "5180", "--strictPort"],
+      "env": { "VITE_API_BASE_URL": "http://127.0.0.1:8010" },
+      "port": 5180,
+      "autoPort": false
     }
   ]
 }

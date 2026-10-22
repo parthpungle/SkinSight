@@ -117,7 +117,7 @@ def main() -> None:
         y, s = scores(test_df)
         m = metrics_with_ci(y, s, groups, ckpt["val_threshold"], n_resamples=n_boot)
         hist_path = art / "runs" / path.stem / "history.json"
-        hist = json.loads(hist_path.read_text()) if hist_path.is_file() else {}
+        hist = json.loads(hist_path.read_text(encoding="utf-8")) if hist_path.is_file() else {}
         m.update({
             "run": path.stem, "model_id": ckpt["model_id"], "model_name": MODEL_NAMES[ckpt["model_id"]],
             "seed": ckpt["seed"], "color_constancy": cc, "best_epoch": ckpt["epoch"],

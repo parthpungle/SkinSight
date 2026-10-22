@@ -39,3 +39,7 @@ class Prediction(BaseModel):
     explanation_message: str | None = None
     gradcam_png_base64: str | None = None
     disclaimer: str = DISCLAIMER
+
+
+class CompareResult(BaseModel):
+    results: list[Prediction]

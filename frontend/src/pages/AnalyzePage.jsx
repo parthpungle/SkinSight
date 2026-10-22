@@ -1,244 +1,184 @@
-import { useEffect, useRef, useState } from "react";
-import { getModels, predict } from "../api.js";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { compare, predict } from "../api.js";
+import EvidencePanel from "../components/EvidencePanel.jsx";
+import ImageDrop from "../components/ImageDrop.jsx";
+import LesionProfile from "../components/LesionProfile.jsx";
+import { Card, Chip, EmptyState, ErrorNote, ScoreBar, SectionLabel, Shell, Spinner, fmt } from "../components/ui.jsx";
 
-const MAX_MB = 10;
-const ACCEPTED = ["image/jpeg", "image/png"];
-
-function Spinner() {
+function ModelCard({ rank, result, info, aggregate, sample, selected, onSelect }) {
+  const mal = result.class_scores.malignant;
+  const isMal = result.predicted_class === "malignant";
+  const agrees = sample ? isMal === (sample.label === 1) : null;
   return (
-    <span
-      className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"
-      aria-hidden="true"
-    />
-  );
-}
-
-function ErrorMessage({ children }) {
-  return (
-    <p role="alert" className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
-      {children}
-    </p>
-  );
-}
-
-function ScoreBar({ label, value, emphasis }) {
-  const pct = Math.round(value * 1000) / 10;
-  return (
-    <div>
-      <div className="flex justify-between text-sm">
-        <span className={emphasis ? "font-semibold" : ""}>{label}</span>
-        <span className="tabular-nums">{value.toFixed(3)}</span>
+    <Card selected={selected} onClick={onSelect}>
+      <div className="grid grid-cols-[36px_minmax(0,1fr)] items-center gap-x-4 gap-y-3 px-5 py-4 md:grid-cols-[36px_minmax(0,1fr)_auto_auto_88px]">
+        <span className={`num text-sm ${rank === 1 ? "text-accent" : "text-faint"}`}>{String(rank).padStart(2, "0")}</span>
+        <div className="min-w-0">
+          <div className="font-semibold">{result.model_name}</div>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {info?.val_auroc != null && <Chip mono>val {fmt(info.val_auroc)}</Chip>}
+            {aggregate && (
+              <Chip mono title="Test AUROC, mean ± SD over 3 seeds">
+                test {fmt(aggregate.auroc.mean)} ± {fmt(aggregate.auroc.sd)}
+              </Chip>
+            )}
+            <Chip tone={isMal ? "bad" : "good"}>{result.predicted_class}</Chip>
+            {agrees !== null && <Chip tone={agrees ? "good" : "bad"}>{agrees ? "agrees with label" : "disagrees with label"}</Chip>}
+          </div>
+        </div>
+        <div className="col-span-2 md:col-span-1">
+          <ScoreBar value={mal} threshold={result.decision_threshold} />
+        </div>
+        <div className="hidden md:block">
+          <span
+            aria-hidden="true"
+            className="num rounded border border-line px-2 py-0.5 text-xs text-muted opacity-0 transition-opacity group-hover:opacity-100"
+          >
+            details
+          </span>
+        </div>
+        <div className={`num text-right text-2xl font-semibold ${selected ? "text-accent" : "text-fg"} col-start-2 md:col-start-auto`}>
+          {fmt(mal)}
+        </div>
       </div>
-      <div className="mt-1 h-2 rounded-full bg-slate-200" aria-hidden="true">
-        <div className={`h-2 rounded-full ${emphasis ? "bg-teal-600" : "bg-slate-400"}`} style={{ width: `${pct}%` }} />
-      </div>
-    </div>
+    </Card>
   );
 }
 
-export default function AnalyzePage() {
-  const [models, setModels] = useState([]);
-  const [modelsError, setModelsError] = useState(null);
-  const [modelId, setModelId] = useState("");
-  const [file, setFile] = useState(null);
-  const [preview, setPreview] = useState(null);
-  const [fileError, setFileError] = useState(null);
+export default function AnalyzePage({ image, setImage, models, modelsError, metrics, gradcam, onScored, openGallery }) {
+  const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [result, setResult] = useState(null);
-  const [dragOver, setDragOver] = useState(false);
-  const inputRef = useRef(null);
+  const [selected, setSelected] = useState(null);
+  const [cams, setCams] = useState({});
+  const reqId = useRef(0);
 
+  // Score every ready model whenever the image changes; ignore responses for stale images.
   useEffect(() => {
-    getModels()
-      .then((ms) => {
-        setModels(ms);
-        const first = ms.find((m) => m.ready);
-        if (first) setModelId(first.id);
-      })
-      .catch((e) => setModelsError(e.message));
-  }, []);
-
-  useEffect(() => () => preview && URL.revokeObjectURL(preview), [preview]);
-
-  function chooseFile(f) {
-    setResult(null);
+    const id = ++reqId.current;
+    setResults(null);
+    setSelected(null);
+    setCams({});
     setError(null);
-    if (!f) return;
-    if (!ACCEPTED.includes(f.type)) {
-      setFileError("Please choose a JPEG or PNG image.");
-      return;
-    }
-    if (f.size > MAX_MB * 1024 * 1024) {
-      setFileError(`Image is larger than ${MAX_MB} MB.`);
-      return;
-    }
-    setFileError(null);
-    setFile(f);
-    setPreview(URL.createObjectURL(f));
-  }
-
-  async function analyze() {
-    if (!file || !modelId || loading) return;
-    setLoading(true);
-    setError(null);
-    setResult(null);
-    try {
-      setResult({ ...(await predict(file, modelId, true)), fileName: file.name });
-    } catch (e) {
-      setError(e.message);
-    } finally {
+    if (!image) {
       setLoading(false);
+      return;
     }
-  }
+    setLoading(true);
+    compare(image.file)
+      .then((r) => {
+        if (id !== reqId.current) return;
+        setResults(r);
+        onScored();
+        const top = [...r].sort((a, b) => b.class_scores.malignant - a.class_scores.malignant)[0];
+        setSelected(top?.model_id ?? null);
+      })
+      .catch((e) => id === reqId.current && setError(e.message))
+      .finally(() => id === reqId.current && setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [image]);
 
-  const readyModels = models.filter((m) => m.ready);
+  // Grad-CAM is fetched lazily, only for the selected model.
+  useEffect(() => {
+    if (!gradcam || !selected || !image || !results || cams[selected]) return;
+    const id = reqId.current;
+    setCams((c) => ({ ...c, [selected]: { loading: true } }));
+    predict(image.file, selected, true)
+      .then((data) => id === reqId.current && setCams((c) => ({ ...c, [selected]: { data } })))
+      .catch((e) => id === reqId.current && setCams((c) => ({ ...c, [selected]: { error: e.message } })));
+  }, [gradcam, selected, image, results, cams]);
+
+  const ranked = useMemo(
+    () => (results ? [...results].sort((a, b) => b.class_scores.malignant - a.class_scores.malignant) : []),
+    [results],
+  );
+  const nMal = ranked.filter((r) => r.predicted_class === "malignant").length;
+  const infoById = Object.fromEntries((models ?? []).map((m) => [m.id, m]));
+  const aggregate = metrics?.summary?.aggregate ?? {};
+  const sample = image?.source === "gallery" ? image.sample : null;
+  const selectedResult = ranked.find((r) => r.model_id === selected) ?? null;
+
+  const sidebar = (
+    <div className="space-y-8">
+      <div>
+        <SectionLabel>This image</SectionLabel>
+        <ImageDrop
+          image={image}
+          onFile={(file) => setImage({ file, previewUrl: URL.createObjectURL(file), source: "upload" })}
+          onPickGallery={openGallery}
+        />
+      </div>
+      <LesionProfile image={image} />
+      <div>
+        <SectionLabel>Models</SectionLabel>
+        {modelsError && <ErrorNote>{modelsError}</ErrorNote>}
+        {!models && !modelsError && <EmptyState>Connecting to the API…</EmptyState>}
+        <div className="divide-y divide-line/60">
+          {(models ?? []).map((m) => (
+            <div key={m.id} className="flex items-center justify-between py-1.5 text-sm">
+              <span className={m.ready ? "text-muted" : "text-faint line-through"}>{m.name}</span>
+              <span className="num text-xs text-faint">{m.ready ? m.checkpoint : "not trained"}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+
+  const main = (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2 pb-1">
+        <SectionLabel>Model comparison</SectionLabel>
+        {ranked.length > 0 && (
+          <span className="num text-xs text-muted">
+            {nMal === 0 || nMal === ranked.length
+              ? `${ranked.length} models agree: ${nMal ? "malignant" : "benign"}`
+              : `split ${nMal} malignant : ${ranked.length - nMal} benign`}
+          </span>
+        )}
+      </div>
+      {!image && (
+        <Card>
+          <div className="px-5 py-10 text-center">
+            <p className="text-sm text-muted">Upload a dermoscopic image or pick one from the test-set gallery.</p>
+            <p className="num mt-1 text-xs text-faint">every trained model scores it; ranked by malignant score</p>
+          </div>
+        </Card>
+      )}
+      {loading && (
+        <p className="flex items-center gap-2 py-4 text-sm text-muted">
+          <Spinner /> Scoring with every model…
+        </p>
+      )}
+      {error && <ErrorNote>{error}</ErrorNote>}
+      {ranked.map((r, i) => (
+        <ModelCard
+          key={r.model_id}
+          rank={i + 1}
+          result={r}
+          info={infoById[r.model_id]}
+          aggregate={aggregate[r.model_id]}
+          sample={sample}
+          selected={selected === r.model_id}
+          onSelect={() => setSelected(r.model_id)}
+        />
+      ))}
+    </div>
+  );
 
   return (
-    <div className="grid gap-6 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-      <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-5" aria-labelledby="input-heading">
-        <h2 id="input-heading" className="text-base font-semibold">
-          1. Choose an image and model
-        </h2>
-
-        <div
-          onDragOver={(e) => {
-            e.preventDefault();
-            setDragOver(true);
-          }}
-          onDragLeave={() => setDragOver(false)}
-          onDrop={(e) => {
-            e.preventDefault();
-            setDragOver(false);
-            chooseFile(e.dataTransfer.files?.[0]);
-          }}
-          className={`flex min-h-48 flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed p-4 text-center ${
-            dragOver ? "border-teal-500 bg-teal-50" : "border-slate-300"
-          }`}
-        >
-          {preview ? (
-            <img src={preview} alt="Selected dermoscopic image" className="max-h-56 rounded-md object-contain" />
-          ) : (
-            <p className="text-sm text-slate-500">Drag a dermoscopic image here (JPEG or PNG, up to {MAX_MB} MB)</p>
-          )}
-          <button
-            type="button"
-            onClick={() => inputRef.current?.click()}
-            className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium hover:bg-slate-50"
-          >
-            {preview ? "Choose a different image" : "Browse files"}
-          </button>
-          <input
-            ref={inputRef}
-            type="file"
-            accept="image/jpeg,image/png"
-            className="sr-only"
-            aria-label="Upload image"
-            onChange={(e) => chooseFile(e.target.files?.[0])}
-          />
-        </div>
-        {fileError && <ErrorMessage>{fileError}</ErrorMessage>}
-
-        <div>
-          <label htmlFor="model" className="mb-1 block text-sm font-medium">
-            Model
-          </label>
-          {modelsError ? (
-            <ErrorMessage>{modelsError}</ErrorMessage>
-          ) : (
-            <select
-              id="model"
-              value={modelId}
-              onChange={(e) => {
-                setModelId(e.target.value);
-                setResult(null);
-              }}
-              className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
-            >
-              {models.length === 0 && <option value="">Loading models…</option>}
-              {models.map((m) => (
-                <option key={m.id} value={m.id} disabled={!m.ready}>
-                  {m.name}
-                  {m.ready ? "" : " (not trained yet)"}
-                </option>
-              ))}
-            </select>
-          )}
-          {models.length > 0 && readyModels.length === 0 && (
-            <p className="mt-2 text-sm text-slate-500">No trained checkpoints yet. Train a model first.</p>
-          )}
-        </div>
-
-        <button
-          type="button"
-          onClick={analyze}
-          disabled={!file || !modelId || loading}
-          className="flex w-full items-center justify-center gap-2 rounded-md bg-teal-700 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-slate-300"
-        >
-          {loading && <Spinner />}
-          {loading ? "Analyzing…" : "Analyze"}
-        </button>
-      </section>
-
-      <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-5" aria-labelledby="result-heading" aria-live="polite">
-        <h2 id="result-heading" className="text-base font-semibold">
-          2. Model output
-        </h2>
-        {error && <ErrorMessage>{error}</ErrorMessage>}
-        {!result && !error && (
-          <p className="text-sm text-slate-500">
-            {loading ? "Running the model…" : "Results will appear here after you analyze an image."}
-          </p>
-        )}
-        {result && (
-          <>
-            <div>
-              <p className="text-xs uppercase tracking-wide text-slate-500">Model prediction</p>
-              <p className="text-2xl font-semibold capitalize">{result.predicted_class}</p>
-              <p className="mt-1 text-xs text-slate-500">
-                {result.model_name} · {result.checkpoint} · {result.fileName}
-              </p>
-            </div>
-            <div className="space-y-3">
-              {Object.entries(result.class_scores).map(([cls, v]) => (
-                <ScoreBar key={cls} label={cls} value={v} emphasis={cls === result.predicted_class} />
-              ))}
-            </div>
-            <p className="text-xs text-slate-500">
-              Uncalibrated model scores, <em>not</em> probabilities of disease. The prediction is "malignant" when the
-              malignant score ≥ {result.decision_threshold.toFixed(3)} (threshold chosen on the validation set).
-            </p>
-
-            <div>
-              <h3 className="mb-2 text-sm font-semibold">Grad-CAM</h3>
-              {result.explanation_available ? (
-                <div className="grid grid-cols-2 gap-3">
-                  <figure>
-                    <img src={preview} alt="Original image" className="aspect-square w-full rounded-md object-fill" />
-                    <figcaption className="mt-1 text-xs text-slate-500">Original (resized as the model sees it)</figcaption>
-                  </figure>
-                  <figure>
-                    <img
-                      src={`data:image/png;base64,${result.gradcam_png_base64}`}
-                      alt={`Grad-CAM overlay for the ${result.predicted_class} prediction`}
-                      className="aspect-square w-full rounded-md"
-                    />
-                    <figcaption className="mt-1 text-xs text-slate-500">
-                      Grad-CAM for "{result.predicted_class}" (red = higher)
-                    </figcaption>
-                  </figure>
-                </div>
-              ) : (
-                <p className="text-sm text-slate-500">{result.explanation_message || "Explanation unavailable."}</p>
-              )}
-              <p className="mt-2 text-xs text-slate-500">
-                Grad-CAM is a qualitative visualisation of image regions that influenced the score. It is not a
-                segmentation and not a medical explanation.
-              </p>
-            </div>
-          </>
-        )}
-      </section>
-    </div>
+    <Shell
+      sidebar={sidebar}
+      main={main}
+      panel={
+        <EvidencePanel
+          result={selectedResult}
+          image={image}
+          cam={cams[selected]}
+          gradcamOn={gradcam}
+          stratified={metrics?.stratified_test}
+        />
+      }
+    />
   );
 }

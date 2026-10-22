@@ -31,7 +31,7 @@ def _served_runs(artifacts: Path) -> dict[str, str]:
     """variant -> run. Prefer the evaluation's choice (best val AUROC); else the lowest seed on disk."""
     summary = artifacts / "metrics" / "summary.json"
     if summary.is_file():
-        served = json.loads(summary.read_text()).get("served_checkpoints", {})
+        served = json.loads(summary.read_text(encoding="utf-8")).get("served_checkpoints", {})
         if served:
             return served
     runs: dict[str, str] = {}
